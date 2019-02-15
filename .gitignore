@@ -3,3 +3,7 @@
 *.out
 *.test
 .idea
+bin/*
+src
+vendor
+azure-keyvault-env

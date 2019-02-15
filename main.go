@@ -12,9 +12,12 @@ import (
 
 	"crypto/tls"
 
+	"context"
+
 	"bytes"
 	"encoding/json"
-	"github.com/Azure/azure-sdk-for-go/dataplane/keyvault"
+
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/v7.0/keyvault"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/cosmincojocar/adal"
 	"github.com/namsral/flag"
@@ -125,7 +128,7 @@ func decodePem(filePath string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	if cliCertIndex == 0 {
 		return nil, nil, fmt.Errorf("couldn't find CLI-Login certificate")
 	}
-	cliKeyId := pemFile[cliCertIndex-41 : cliCertIndex-23]
+	cliKeyID := pemFile[cliCertIndex-41 : cliCertIndex-23]
 	cliCertificate := pemFile[cliCertIndex+20:]
 
 	cliCertEnd := bytes.Index(cliCertificate, []byte("-----END CERTIFICATE-----"))
@@ -134,7 +137,7 @@ func decodePem(filePath string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	}
 	cliCertificate = cliCertificate[:cliCertEnd+25]
 
-	cliPrivateIndex := bytes.Index(pemFile, cliKeyId)
+	cliPrivateIndex := bytes.Index(pemFile, cliKeyID)
 	if cliCertIndex == 0 {
 		return nil, nil, fmt.Errorf("couldn't find CLI-Login private key")
 	}
@@ -210,55 +213,58 @@ func expandVars(vaultName string,
 	vaultClient.Authorizer = autorest.NewBearerAuthorizer(spt)
 	vaultURL := fmt.Sprintf("https://%s.vault.azure.net", vaultName)
 
-	secretList, err := vaultClient.GetSecrets(vaultURL, nil)
-	if err != nil || *secretList.Value == nil {
+	secretList, err := vaultClient.GetSecrets(context.TODO(),vaultURL, nil)
+	if err != nil || secretList.Response == nil {
 		return nil, fmt.Errorf("error on getting secrets list: %v", err)
 	}
 
-	for _, secret := range *secretList.Value {
-		secretKeyUrl := strings.Split(*secret.ID, "/")
-		secretKey := secretKeyUrl[len(secretKeyUrl)-1]
+	for secretList.Values() != nil {
 
-		if strings.HasPrefix(secretKey, servicePrefix) {
-			secretName = secretKey[len(servicePrefix)+1:]
-
-			if strings.HasSuffix(secretName, "-file") {
-				secretName = secretName[:len(secretName)-5]
-				secretFile = true
-			} else {
-				secretFile = false
-			}
-
-
-			secret, err := vaultClient.GetSecret(vaultURL, secretKey, "")
-			if err != nil {
-				return nil, fmt.Errorf("failed to obtain secret with key \"%s\" from vault: %v", secretKey, err)
-			}
-
-			secretValue := *secret.Value
-			if secretFile {
-				secretContent, err := base64.StdEncoding.DecodeString(secretValue)
-				if err != nil {
-					return nil, fmt.Errorf("failed to base64 decode secret with key \"%s\": %v", secretKey, err)
-				}
-
-				secretDest = strings.Split(string(secretContent), "\r\n")[0]
-				secretContent = secretContent[len(secretDest)+2:]
-
-				err = ioutil.WriteFile(secretDest, secretContent, 0644)
-				if err != nil {
-					return nil, fmt.Errorf("failed to write contents of \"%s\" secret to \"%s\": %v", secretName, secretDest, exportStrings)
-				}
-				secretValue = secretDest
-			}
-
-			varName := strings.Replace(strings.ToUpper(secretName), "-", "_", -1)
-			exportVars[varName] = secretValue
-			if err != nil {
-				return nil, fmt.Errorf("failed to update environment variable \"%s\": %v", secretName, err)
-			}
-		}
-
+	    for _, secret := range secretList.Values() {
+	    	secretKeyURL := strings.Split(*secret.ID, "/")
+	    	secretKey := secretKeyURL[len(secretKeyURL)-1]
+    
+	    	if strings.HasPrefix(secretKey, servicePrefix) {
+	    		secretName = secretKey[len(servicePrefix)+1:]
+    
+	    		if strings.HasSuffix(secretName, "-file") {
+	    			secretName = secretName[:len(secretName)-5]
+	    			secretFile = true
+	    		} else {
+	    			secretFile = false
+	    		}
+    
+	    		secret, err := vaultClient.GetSecret(context.TODO(),vaultURL, secretKey, "")
+	    		if err != nil {
+	    			return nil, fmt.Errorf("failed to obtain secret with key \"%s\" from vault: %v", secretKey, err)
+	    		}
+    
+	    		secretValue := *secret.Value
+	    		if secretFile {
+	    			secretDest = strings.Split(string(secretValue), " ")[0]
+	    			secretValue = strings.Split(string(secretValue), " ")[1]
+	    			secretContent, err := base64.StdEncoding.DecodeString(secretValue)
+	    			if err != nil {
+	    				return nil, fmt.Errorf("failed to base64 decode secret with key \"%s\": %v", secretKey, err)
+	    			}
+    
+	    			err = ioutil.WriteFile(secretDest, secretContent, 0644)
+	    			if err != nil {
+	    				return nil, fmt.Errorf("failed to write contents of \"%s\" secret to \"%s\": %v", secretName, secretDest, exportStrings)
+	    			}
+	    			secretValue = secretDest
+	    		}
+    
+	    		varName := strings.Replace(strings.ToUpper(secretName), "-", "_", -1)
+	    		exportVars[varName] = secretValue
+	    		if err != nil {
+	    			return nil, fmt.Errorf("failed to update environment variable \"%s\": %v", secretName, err)
+	    		}
+	    	}
+    
+	    }
+	    
+	    secretList.NextWithContext(context.TODO())
 	}
 
 	return exportVars, nil
